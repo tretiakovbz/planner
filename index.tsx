@@ -1,0 +1,553 @@
+// Цели и сроки: Telegram Mini App + бот с напоминаниями. Один файл для Railway Function (Bun).
+import { Database } from "bun:sqlite";
+import { createHmac, createHash, timingSafeEqual } from "node:crypto";
+import { mkdirSync } from "node:fs";
+
+const TOKEN = Bun.env.BOT_TOKEN || "";
+const DOMAIN = Bun.env.RAILWAY_PUBLIC_DOMAIN || "";
+const APP_URL = DOMAIN ? "https://" + DOMAIN + "/" : "";
+const DIR = Bun.env.RAILWAY_VOLUME_MOUNT_PATH || Bun.env.DATA_DIR || "/data";
+const HOOK = TOKEN ? createHash("sha256").update(TOKEN + ":hook").digest("hex").slice(0, 40) : "";
+
+let persistent = true;
+let db: Database;
+try {
+  mkdirSync(DIR, { recursive: true });
+  db = new Database(DIR + "/goals.db");
+} catch (e) {
+  persistent = false;
+  console.error("STORAGE: том недоступен, данные хранятся только в памяти", e);
+  db = new Database(":memory:");
+}
+db.run("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT DEFAULT '', tz INTEGER DEFAULT 240, mode TEXT DEFAULT 'daily', hour INTEGER DEFAULT 9, last_sent TEXT DEFAULT '')");
+db.run("CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT NOT NULL, deadline TEXT NOT NULL, step TEXT DEFAULT '', created TEXT NOT NULL, done INTEGER DEFAULT 0, done_at TEXT DEFAULT '')");
+db.run("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
+try { db.run("ALTER TABLE goals ADD COLUMN cat TEXT DEFAULT ''"); } catch {}
+
+type User = { id: number; name: string; tz: number; mode: string; hour: number; last_sent: string };
+type Goal = { id: number; user_id: number; title: string; deadline: string; step: string; created: string; done: number; done_at: string; cat: string };
+
+const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+
+function ensureUser(id: number, name: string): User {
+  db.run("INSERT INTO users(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name", [id, name || ""]);
+  seed(id);
+  return db.query("SELECT * FROM users WHERE id=?").get(id) as User;
+}
+
+// Разовый перенос стартового списка целей: достаётся первому пользователю, открывшему бота.
+// Сам список лежит в переменной окружения SEED_JSON, а не в коде.
+function seed(userId: number) {
+  const raw = Bun.env.SEED_JSON;
+  if (!raw || db.query("SELECT v FROM meta WHERE k='seeded'").get()) return;
+  try {
+    const now = new Date().toISOString();
+    let n = 0;
+    for (const item of JSON.parse(raw)) {
+      const c = clean(item);
+      if (!c) continue;
+      db.run("INSERT INTO goals(user_id,title,deadline,step,cat,created) VALUES(?,?,?,?,?,?)", [userId, c.title, c.deadline, c.step, c.cat, now]);
+      n++;
+    }
+    db.run("INSERT INTO meta(k,v) VALUES('seeded',?)", [String(userId)]);
+    console.log("SEED: добавлено целей", n);
+  } catch (e) { console.error("SEED: не удалось разобрать SEED_JSON", String(e)); }
+}
+
+// Проверка подписи Telegram: только настоящий пользователь бота получает доступ к своим целям.
+function auth(req: Request): User | null {
+  if (!TOKEN) return null;
+  const h = req.headers.get("authorization") || "";
+  if (!h.startsWith("tma ")) return null;
+  const p = new URLSearchParams(h.slice(4));
+  const hash = p.get("hash") || "";
+  p.delete("hash");
+  const dcs = [...p.entries()].map(([k, v]) => k + "=" + v).sort().join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(TOKEN).digest();
+  const calc = createHmac("sha256", secret).update(dcs).digest("hex");
+  if (hash.length !== calc.length || !timingSafeEqual(Buffer.from(hash), Buffer.from(calc))) return null;
+  if (Date.now() / 1000 - Number(p.get("auth_date") || 0) > 7 * 86400) return null;
+  try {
+    const u = JSON.parse(p.get("user") || "{}");
+    if (!u.id) return null;
+    return ensureUser(Number(u.id), String(u.first_name || ""));
+  } catch { return null; }
+}
+
+function state(u: User) {
+  const goals = (db.query("SELECT * FROM goals WHERE user_id=? ORDER BY deadline").all(u.id) as Goal[]).map(g => ({
+    id: String(g.id), title: g.title, deadline: g.deadline, step: g.step, cat: g.cat || "", created: g.created, done: !!g.done, doneAt: g.done_at,
+  }));
+  return { goals, settings: { mode: u.mode, hour: u.hour, tz: u.tz } };
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+function clean(b: any) {
+  const title = String(b?.title ?? "").trim().slice(0, 120);
+  const deadline = String(b?.deadline ?? "");
+  const step = String(b?.step ?? "").trim().slice(0, 140);
+  const cat = String(b?.cat ?? "").trim().slice(0, 40);
+  if (!title || !DATE.test(deadline) || isNaN(Date.parse(deadline))) return null;
+  return { title, deadline, step, cat };
+}
+
+// ---------- Тексты ----------
+const pl = (n: number, f: string[]) => { const a = n % 100, b = n % 10; return a > 10 && a < 20 ? f[2] : b === 1 ? f[0] : b >= 2 && b <= 4 ? f[1] : f[2]; };
+const DAYS = ["день", "дня", "дней"], HRS = ["час", "часа", "часов"];
+function dueMs(deadline: string, tz: number) { const [y, m, d] = deadline.split("-").map(Number); return Date.UTC(y, m - 1, d, 23, 59, 59) - tz * 60000; }
+function leftText(ms: number) {
+  if (ms < 0) return "срок прошёл";
+  const h = Math.floor(ms / 3600000), d = Math.floor(h / 24);
+  if (d >= 7) return d + " " + pl(d, DAYS);
+  if (d >= 1) return d + " " + pl(d, DAYS) + " " + (h % 24) + " ч";
+  return h >= 1 ? h + " " + pl(h, HRS) : "меньше часа";
+}
+function softLine(ms: number) {
+  const d = Math.floor(ms / 86400000);
+  if (ms < 0) return "Срок прошёл, и это не провал. Дату можно сдвинуть или закрыть цель как есть.";
+  if (d < 1) return "Финишная прямая. Одного спокойного подхода может хватить.";
+  if (d < 3) return "Хорошее время, чтобы закончить главное и не трогать мелочи.";
+  if (d < 8) return "Один небольшой шаг сегодня заметно разгрузит конец недели.";
+  if (d < 31) return "Запас есть, достаточно двигаться понемногу.";
+  return "Времени много, можно идти в своём темпе.";
+}
+function summary(u: User, onlyNear: boolean) {
+  const now = Date.now();
+  let list = (db.query("SELECT * FROM goals WHERE user_id=? AND done=0").all(u.id) as Goal[])
+    .map(g => ({ g, ms: dueMs(g.deadline, u.tz) - now }))
+    .filter(x => x.ms > -3 * 86400000)
+    .sort((a, b) => a.ms - b.ms);
+  if (onlyNear) list = list.filter(x => x.ms < 7 * 86400000);
+  if (!list.length) return "";
+  const lines = list.slice(0, 6).map(x => "• " + x.g.title + ": " + leftText(x.ms));
+  if (list.length > 6) lines.push("…и ещё " + (list.length - 6));
+  const first = list.find(x => x.ms >= 0) || list[0];
+  let t = lines.join("\n") + "\n\n" + softLine(first.ms);
+  if (first.g.step) t += "\nБлижайший шаг: " + first.g.step;
+  return t;
+}
+
+// ---------- Telegram ----------
+async function tg(method: string, body: unknown) {
+  if (!TOKEN) return null;
+  try {
+    const r = await fetch("https://api.telegram.org/bot" + TOKEN + "/" + method, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const j: any = await r.json();
+    if (!j.ok) console.error("tg", method, j.description);
+    return j;
+  } catch (e) { console.error("tg", method, String(e)); return null; }
+}
+const openBtn = () => APP_URL ? { reply_markup: { inline_keyboard: [[{ text: "Открыть планер", web_app: { url: APP_URL } }]] } } : {};
+
+async function onUpdate(up: any) {
+  const m = up?.message;
+  if (!m?.chat || m.chat.type !== "private" || !m.from) return;
+  const u = ensureUser(Number(m.from.id), String(m.from.first_name || ""));
+  const text = String(m.text || "");
+  if (text.startsWith("/left")) {
+    const s = summary(u, false);
+    await tg("sendMessage", { chat_id: u.id, text: s || "Активных целей сейчас нет. Можно выдохнуть или поставить следующую.", ...openBtn() });
+  } else {
+    await tg("sendMessage", { chat_id: u.id, text: "Здесь живёт планер целей с обратным отсчётом.\n\nОткройте его кнопкой ниже и добавьте цель. Раз в день я буду коротко и спокойно напоминать, сколько времени осталось. Время и частоту можно поменять внутри планера.\n\n/left покажет остаток по всем целям.", ...openBtn() });
+  }
+}
+
+async function tick() {
+  let sent = 0;
+  const users = db.query("SELECT * FROM users WHERE mode!='off'").all() as User[];
+  for (const u of users) {
+    const local = new Date(Date.now() + u.tz * 60000);
+    const today = local.toISOString().slice(0, 10), hour = local.getUTCHours();
+    if (hour < u.hour || u.last_sent === today) continue;
+    if (u.mode === "weekly" && local.getUTCDay() !== 1) continue;
+    const s = summary(u, u.mode === "near");
+    db.run("UPDATE users SET last_sent=? WHERE id=?", [today, u.id]);
+    if (!s) continue;
+    const hi = hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
+    const r = await tg("sendMessage", { chat_id: u.id, text: hi + (u.name ? ", " + u.name : "") + ". Коротко по срокам:\n\n" + s, ...openBtn() });
+    if (r?.ok) sent++;
+  }
+  return sent;
+}
+
+async function setup() {
+  if (!TOKEN || !APP_URL) { console.log("SETUP: жду", !TOKEN ? "BOT_TOKEN" : "публичный домен"); return; }
+  const a = await tg("setWebhook", { url: APP_URL + "tg/" + HOOK, secret_token: HOOK, allowed_updates: ["message"] });
+  const b = await tg("setChatMenuButton", { menu_button: { type: "web_app", text: "Планер", web_app: { url: APP_URL } } });
+  await tg("setMyCommands", { commands: [{ command: "start", description: "Открыть планер" }, { command: "left", description: "Сколько осталось по целям" }] });
+  console.log("SETUP: webhook", a?.ok ? "ok" : "ошибка", "| кнопка меню", b?.ok ? "ok" : "ошибка", "| хранилище", persistent ? "постоянное" : "В ПАМЯТИ");
+}
+
+// ---------- HTTP ----------
+async function api(req: Request, path: string) {
+  const u = auth(req);
+  if (!u) return json({ error: TOKEN ? "auth" : "no_token" }, 401);
+  const body: any = req.method === "GET" || req.method === "DELETE" ? null : await req.json().catch(() => null);
+  const idm = path.match(/^\/api\/goals\/(\d+)$/);
+  if (path === "/api/state" && req.method === "GET") return json(state(u));
+  if (path === "/api/goals" && req.method === "POST") {
+    const c = clean(body);
+    if (!c) return json({ error: "bad_input" }, 400);
+    db.run("INSERT INTO goals(user_id,title,deadline,step,cat,created) VALUES(?,?,?,?,?,?)", [u.id, c.title, c.deadline, c.step, c.cat, new Date().toISOString()]);
+    return json(state(u));
+  }
+  if (idm && req.method === "PUT") {
+    const c = clean(body);
+    if (!c) return json({ error: "bad_input" }, 400);
+    const done = body.done ? 1 : 0;
+    db.run("UPDATE goals SET title=?,deadline=?,step=?,cat=?,done=?,done_at=CASE WHEN ?=1 AND done=0 THEN ? WHEN ?=0 THEN '' ELSE done_at END WHERE id=? AND user_id=?",
+      [c.title, c.deadline, c.step, c.cat, done, done, new Date().toISOString(), done, Number(idm[1]), u.id]);
+    return json(state(u));
+  }
+  if (idm && req.method === "DELETE") {
+    db.run("DELETE FROM goals WHERE id=? AND user_id=?", [Number(idm[1]), u.id]);
+    return json(state(u));
+  }
+  if (path === "/api/settings" && req.method === "PUT") {
+    const mode = ["off", "daily", "weekly", "near"].includes(body?.mode) ? body.mode : u.mode;
+    const hour = Number.isInteger(body?.hour) && body.hour >= 0 && body.hour <= 23 ? body.hour : u.hour;
+    const tz = Number.isInteger(body?.tz) && Math.abs(body.tz) <= 840 ? body.tz : u.tz;
+    // Если выбранный час сегодня уже прошёл, первое напоминание придёт завтра, а не сразу.
+    const local = new Date(Date.now() + tz * 60000);
+    const last = hour !== u.hour && local.getUTCHours() >= hour ? local.toISOString().slice(0, 10) : u.last_sent;
+    db.run("UPDATE users SET mode=?,hour=?,tz=?,last_sent=? WHERE id=?", [mode, hour, tz, last, u.id]);
+    return json(state(db.query("SELECT * FROM users WHERE id=?").get(u.id) as User));
+  }
+  return json({ error: "not_found" }, 404);
+}
+
+const boot = () => Bun.serve({
+  port: Number(Bun.env.PORT || 3000),
+  hostname: "0.0.0.0",
+  async fetch(req) {
+    const path = new URL(req.url).pathname;
+    try {
+      if (path === "/" && req.method === "GET") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+      if (path === "/health") return json({ ok: true, bot: !!TOKEN, domain: !!DOMAIN, persistent });
+      if (path === "/tick") return json({ sent: await tick() });
+      if (HOOK && path === "/tg/" + HOOK && req.method === "POST") {
+        if (req.headers.get("x-telegram-bot-api-secret-token") !== HOOK) return json({ error: "forbidden" }, 403);
+        await onUpdate(await req.json().catch(() => null));
+        return json({ ok: true });
+      }
+      if (path.startsWith("/api/")) return await api(req, path);
+      return json({ error: "not_found" }, 404);
+    } catch (e) {
+      console.error("ERR", path, e);
+      return json({ error: "server" }, 500);
+    }
+  },
+});
+
+// ---------- Страница ----------
+const PAGE = String.raw`<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Цели и сроки</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+:root{
+  --bg:#EDF2EF; --surface:#FBFDFC; --ink:#1B2B27; --muted:#5E716A; --line:#D5DFDA;
+  --accent:#1C7566; --accent-ink:#FFFFFF; --soon:#9A6410; --late:#A9483F; --track:#DCE6E1;
+  --display:"Unbounded","Golos Text",system-ui,sans-serif;
+  --body:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#111A18; --surface:#18231F; --ink:#E4ECE8; --muted:#8FA39B; --line:#26352F;
+  --accent:#5CC2AE; --accent-ink:#0C1F1B; --soon:#E0B25A; --late:#E08A84; --track:#22302B; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#111A18; --surface:#18231F; --ink:#E4ECE8; --muted:#8FA39B; --line:#26352F;
+  --accent:#5CC2AE; --accent-ink:#0C1F1B; --soon:#E0B25A; --late:#E08A84; --track:#22302B; color-scheme:dark }
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--body)}
+.wrap{max-width:560px;margin:0 auto;padding-inline:16px;padding-block:calc(16px + env(safe-area-inset-top,0px)) calc(40px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:20px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h1{font:700 1.15rem/1.2 var(--display);margin:0;letter-spacing:-.01em}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;border-radius:10px}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn{padding:10px 16px;font-weight:500;border:1px solid var(--line);background:var(--surface);min-height:44px}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.quiet{border-color:transparent;background:none;color:var(--muted);padding-inline:10px}
+.btn.danger{color:var(--late)}
+.hero{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:20px;display:flex;flex-direction:column;gap:14px;--state:var(--accent)}
+[data-state="soon"]{--state:var(--soon)} [data-state="late"]{--state:var(--late)}
+.eyebrow{margin:0;font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--state)}
+.hero h2{margin:0;font:600 1.35rem/1.25 var(--body);text-wrap:balance;overflow-wrap:anywhere}
+.clock{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.cell{background:var(--bg);border-radius:12px;padding:12px 4px 8px;text-align:center;min-width:0}
+.num{display:block;font:700 clamp(1.4rem,7vw,2.2rem)/1.1 var(--display);font-variant-numeric:tabular-nums;color:var(--state)}
+.lbl{font-size:.75rem;color:var(--muted)}
+.bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--state);border-radius:3px}
+.meta{margin:0;font-size:.875rem;color:var(--muted)}
+.note{margin:0;padding-top:14px;border-top:1px solid var(--line)}
+.step{margin:0;font-size:.9375rem}
+.step b{font-weight:600}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.list li{padding:14px 0;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px;--state:var(--accent)}
+.list li:first-child{border-top:0}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.top .t{font-weight:500;min-width:0;overflow-wrap:anywhere}
+.pill{flex:none;font-size:.8125rem;font-weight:600;color:var(--state);font-variant-numeric:tabular-nums}
+.sub{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:.8125rem;color:var(--muted)}
+h3{margin:0;font-size:.8125rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+details summary{cursor:pointer;font-size:.875rem;color:var(--muted);padding:8px 0}
+.done .t{text-decoration:line-through;color:var(--muted)}
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:20px;padding:28px 20px;text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center}
+.empty p{margin:0;color:var(--muted);max-width:34ch}
+.remind{border-top:1px solid var(--line);padding-top:20px;display:flex;flex-direction:column;gap:12px}
+.remind .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.remind p{margin:0;font-size:.8125rem;color:var(--muted)}
+dialog{border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--ink);padding:20px;width:min(100% - 32px,440px)}
+dialog::backdrop{background:rgba(10,20,17,.5)}
+form{display:flex;flex-direction:column;gap:14px}
+form h2{margin:0;font:600 1.125rem/1.3 var(--body)}
+label{display:flex;flex-direction:column;gap:6px;font-size:.875rem;color:var(--muted);min-width:0}
+input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%;min-height:44px}
+.remind select{background:var(--surface)}
+.actions{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));margin:0 auto;max-width:420px;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:.9375rem;text-align:center}
+</style></head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>Цели и сроки</h1><p class="meta" id="count"></p></div>
+    <button class="btn primary" id="add" hidden>Новая цель</button>
+  </header>
+  <main id="root"><div class="empty"><p>Загружаю цели…</p></div></main>
+  <section class="remind" id="remind" hidden>
+    <h3>Напоминания в Telegram</h3>
+    <div class="fields">
+      <label>Как часто
+        <select id="sMode">
+          <option value="daily">Каждый день</option>
+          <option value="weekly">По понедельникам</option>
+          <option value="near">Только когда срок близко</option>
+          <option value="off">Не присылать</option>
+        </select>
+      </label>
+      <label>Во сколько
+        <select id="sHour"></select>
+      </label>
+    </div>
+    <p id="sHint"></p>
+  </section>
+</div>
+
+<dialog id="dlg">
+  <form id="form">
+    <h2 id="dlgTitle">Новая цель</h2>
+    <label>Что нужно сделать
+      <input id="fTitle" required maxlength="120" placeholder="Например: сдать отчёт" autocomplete="off">
+    </label>
+    <label>Срок
+      <input id="fDate" type="date" required>
+    </label>
+    <label>Категория (необязательно)
+      <input id="fCat" maxlength="40" placeholder="Например: Бизнес" autocomplete="off" list="cats">
+      <datalist id="cats"></datalist>
+    </label>
+    <label>Ближайший маленький шаг (необязательно)
+      <input id="fStep" maxlength="140" placeholder="Например: набросать план" autocomplete="off">
+    </label>
+    <div class="actions">
+      <button type="button" class="btn quiet danger" id="del" hidden>Удалить</button>
+      <span class="row" style="margin-left:auto">
+        <button type="button" class="btn" id="cancel">Отмена</button>
+        <button type="submit" class="btn primary">Сохранить</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+<div class="toast" id="toast" hidden role="status"></div>
+
+<script>
+var $=function(id){return document.getElementById(id)}, root=$('root');
+var tgApp=window.Telegram&&window.Telegram.WebApp, initData=tgApp&&tgApp.initData||'';
+var LS='goals-tg-v1';
+var goals=[], settings=null, ready=false, editing=null, busy=false;
+
+function theme(){
+  if(!tgApp)return;
+  var t=tgApp.colorScheme==='dark'?'dark':'light';
+  document.documentElement.dataset.theme=t;
+  var c=t==='dark'?'#111A18':'#EDF2EF';
+  try{tgApp.setHeaderColor(c);tgApp.setBackgroundColor(c)}catch(e){}
+}
+if(tgApp){try{tgApp.ready();tgApp.expand();tgApp.onEvent('themeChanged',theme)}catch(e){} theme()}
+function buzz(){try{tgApp.HapticFeedback.notificationOccurred('success')}catch(e){}}
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function pl(n,f){var a=n%100,b=n%10;return a>10&&a<20?f[2]:b===1?f[0]:b>=2&&b<=4?f[1]:f[2]}
+var DAYS=['день','дня','дней'], HRS=['час','часа','часов'];
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function due(g){var p=String(g.deadline).split('-').map(Number);return new Date(p[0],p[1]-1,p[2],23,59,59).getTime()}
+function parts(ms){var s=Math.floor(Math.max(0,ms)/1000);return{d:Math.floor(s/86400),h:Math.floor(s%86400/3600),m:Math.floor(s%3600/60),s:s%60}}
+function stateOf(ms){return ms<0?'late':ms<3*864e5?'soon':'calm'}
+function shortLeft(ms){
+  if(ms<0){var d=Math.ceil(-ms/864e5);return 'срок прошёл '+d+' '+pl(d,DAYS)+' назад'}
+  var p=parts(ms);
+  if(p.d>=7)return p.d+' '+pl(p.d,DAYS);
+  if(p.d>=1)return p.d+' '+pl(p.d,DAYS)+' '+p.h+' ч';
+  return p.h+' ч '+p.m+' мин';
+}
+function pct(g){var a=Date.parse(g.created)||Date.now(),b=due(g);if(b<=a)return 100;return Math.min(100,Math.max(0,Math.round((Date.now()-a)/(b-a)*100)))}
+function niceDate(g){var d=new Date(due(g));return d.toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:d.getFullYear()===new Date().getFullYear()?undefined:'numeric'})}
+function note(ms){
+  var p=parts(ms), d=p.d;
+  if(ms<0)return 'Срок прошёл, и это не провал. Можно сдвинуть дату или закрыть цель как есть.';
+  if(d<1)return 'Финишная прямая: '+(p.h?'осталось '+p.h+' '+pl(p.h,HRS):'остался последний час')+'. Одного спокойного подхода может хватить.';
+  if(d<3)return 'Осталось '+d+' '+pl(d,DAYS)+'. Хорошее время, чтобы закончить главное и не трогать мелочи.';
+  if(d<8)return 'Впереди '+d+' '+pl(d,DAYS)+'. Один небольшой шаг сегодня заметно разгрузит конец недели.';
+  if(d<31)return 'Осталось '+d+' '+pl(d,DAYS)+'. Запас есть, достаточно двигаться понемногу.';
+  return 'До срока '+d+' '+pl(d,DAYS)+'. Времени много, можно идти в своём темпе.';
+}
+
+function render(){
+  if(!ready&&!goals.length)return;
+  var act=goals.filter(function(g){return !g.done}).sort(function(a,b){return due(a)-due(b)});
+  var done=goals.filter(function(g){return g.done}).sort(function(a,b){return String(b.doneAt||'').localeCompare(String(a.doneAt||''))});
+  $('count').textContent=goals.length?'Выполнено '+done.length+' из '+goals.length:'';
+  var cats={};goals.forEach(function(g){if(g.cat)cats[g.cat]=1});
+  $('cats').innerHTML=Object.keys(cats).map(function(c){return '<option value="'+esc(c)+'">'}).join('');
+  if(!goals.length){
+    root.innerHTML='<div class="empty"><p>Здесь появится обратный отсчёт до вашей ближайшей цели.</p><button class="btn primary" data-act="new">Добавить первую цель</button></div>';
+    return;
+  }
+  var now=Date.now(), hero=act.filter(function(g){return due(g)>=now})[0]||act[0], h='';
+  if(hero){
+    var ms=due(hero)-now, p=pct(hero);
+    h+='<section class="hero" data-state="'+stateOf(ms)+'" data-hero="'+esc(hero.id)+'">'
+      +'<p class="eyebrow">'+(ms<0?'Срок прошёл':'Ближайшая цель')+(hero.cat?' · '+esc(hero.cat):'')+'</p>'
+      +'<h2>'+esc(hero.title)+'</h2>'
+      +'<div class="clock">'+[['d','дней'],['h','часов'],['m','минут'],['s','секунд']].map(function(u){return '<div class="cell"><span class="num" data-u="'+u[0]+'">0</span><span class="lbl">'+u[1]+'</span></div>'}).join('')+'</div>'
+      +'<div class="bar"><i style="width:'+p+'%"></i></div>'
+      +'<p class="meta">Срок '+esc(niceDate(hero))+' · прошло '+p+'% времени</p>'
+      +(hero.step?'<p class="step"><b>Ближайший шаг:</b> '+esc(hero.step)+'</p>':'')
+      +'<p class="note">'+esc(note(ms))+'</p>'
+      +'<div class="row"><button class="btn primary" data-act="done" data-id="'+esc(hero.id)+'">Готово</button><button class="btn" data-act="edit" data-id="'+esc(hero.id)+'">Изменить</button></div>'
+      +'</section>';
+  }else{
+    h+='<div class="empty"><p>Все цели закрыты. Можно выдохнуть или поставить следующую.</p></div>';
+  }
+  var rest=act.filter(function(g){return g!==hero});
+  if(rest.length){
+    h+='<section style="margin-top:24px"><h3>Остальные цели</h3><ul class="list">'+rest.map(function(g){
+      var ms=due(g)-now;
+      return '<li data-state="'+stateOf(ms)+'"><div class="top"><span class="t">'+esc(g.title)+'</span><span class="pill">'+esc(shortLeft(ms))+'</span></div>'
+        +'<div class="bar"><i style="width:'+pct(g)+'%"></i></div>'
+        +'<div class="sub"><span>до '+esc(niceDate(g))+(g.cat?' · '+esc(g.cat):'')+'</span><span class="row"><button class="btn quiet" data-act="edit" data-id="'+esc(g.id)+'">Изменить</button><button class="btn quiet" data-act="done" data-id="'+esc(g.id)+'">Готово</button></span></div></li>';
+    }).join('')+'</ul></section>';
+  }
+  if(done.length){
+    h+='<details style="margin-top:16px"><summary>Выполнено: '+done.length+'</summary><ul class="list done">'+done.map(function(g){
+      return '<li><div class="top"><span class="t">'+esc(g.title)+'</span><button class="btn quiet" data-act="undo" data-id="'+esc(g.id)+'">Вернуть</button></div></li>'}).join('')+'</ul></details>';
+  }
+  root.innerHTML=h;
+  tick();
+}
+function tick(){
+  var el=root.querySelector('[data-hero]'); if(!el)return;
+  var g=goals.filter(function(x){return x.id===el.dataset.hero})[0]; if(!g)return;
+  var p=parts(due(g)-Date.now());
+  el.querySelectorAll('.num').forEach(function(n){var v=p[n.dataset.u];n.textContent=n.dataset.u==='d'?v:String(v).padStart(2,'0')});
+}
+setInterval(tick,1000); setInterval(render,60000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)render()});
+
+function toast(t){var e=$('toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){e.hidden=true},4000)}
+function hint(){
+  if(!settings)return;
+  var m=settings.mode, t=String(settings.hour).padStart(2,'0')+':00';
+  $('sHour').disabled=m==='off';
+  $('sHint').textContent=m==='off'?'Бот ничего не присылает. Остаток всегда можно узнать командой /left.'
+    :m==='daily'?'Одно короткое сообщение в '+t+'. Если активных целей нет, бот молчит.'
+    :m==='weekly'?'Одно сообщение по понедельникам в '+t+'.'
+    :'Бот пишет в '+t+' только в те дни, когда до какой-то цели осталось меньше недели.';
+}
+function apply(s){
+  goals=s.goals||[]; settings=s.settings||settings; ready=true;
+  try{localStorage.setItem(LS,JSON.stringify(goals))}catch(e){}
+  $('add').hidden=false; $('remind').hidden=false;
+  if(settings){$('sMode').value=settings.mode;$('sHour').value=String(settings.hour)}
+  hint(); render();
+}
+function call(method,path,body){
+  return fetch(path,{method:method,headers:{'authorization':'tma '+initData,'content-type':'application/json'},body:body?JSON.stringify(body):undefined})
+    .then(function(r){return r.json().then(function(j){if(!r.ok)throw j;return j})});
+}
+function send(method,path,body,okText){
+  if(busy)return; busy=true;
+  call(method,path,body).then(function(s){apply(s);if(okText){toast(okText);buzz()}})
+    .catch(function(){toast('Не удалось сохранить. Проверьте соединение и попробуйте ещё раз.')})
+    .then(function(){busy=false});
+}
+function payload(g,over){var o={title:g.title,deadline:g.deadline,step:g.step||'',cat:g.cat||'',done:!!g.done};for(var k in over)o[k]=over[k];return o}
+
+function openForm(g){
+  editing=g||null;
+  $('dlgTitle').textContent=g?'Изменить цель':'Новая цель';
+  $('fTitle').value=g?g.title:'';
+  $('fDate').value=g?g.deadline:iso(new Date(Date.now()+30*864e5));
+  $('fStep').value=g?(g.step||''):'';
+  $('fCat').value=g?(g.cat||''):'';
+  var d=$('del');d.hidden=!g;d.textContent='Удалить';d.dataset.sure='';
+  $('dlg').showModal();
+}
+$('add').onclick=function(){openForm()};
+$('cancel').onclick=function(){$('dlg').close()};
+$('del').onclick=function(e){
+  var b=e.currentTarget;
+  if(!b.dataset.sure){b.dataset.sure='1';b.textContent='Точно удалить?';return}
+  var id=editing.id;$('dlg').close();send('DELETE','/api/goals/'+id);
+};
+$('form').addEventListener('submit',function(e){
+  e.preventDefault();
+  var title=$('fTitle').value.trim(), deadline=$('fDate').value;
+  if(!title||!deadline)return;
+  var data={title:title,deadline:deadline,step:$('fStep').value.trim(),cat:$('fCat').value.trim(),done:editing?!!editing.done:false};
+  var id=editing&&editing.id;
+  $('dlg').close();
+  if(id)send('PUT','/api/goals/'+id,data); else send('POST','/api/goals',data);
+});
+root.addEventListener('click',function(e){
+  var b=e.target.closest('[data-act]'); if(!b)return;
+  var g=goals.filter(function(x){return x.id===b.dataset.id})[0];
+  if(b.dataset.act==='new')openForm();
+  else if(!g)return;
+  else if(b.dataset.act==='edit')openForm(g);
+  else if(b.dataset.act==='done')send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Готово. Цель закрыта.');
+  else if(b.dataset.act==='undo')send('PUT','/api/goals/'+g.id,payload(g,{done:false}));
+});
+function saveSettings(){send('PUT','/api/settings',{mode:$('sMode').value,hour:Number($('sHour').value),tz:-new Date().getTimezoneOffset()})}
+$('sMode').onchange=saveSettings; $('sHour').onchange=saveSettings;
+(function(){var h='';for(var i=6;i<=23;i++)h+='<option value="'+i+'">'+String(i).padStart(2,'0')+':00</option>';$('sHour').innerHTML=h})();
+
+function start(){
+  if(!initData){
+    root.innerHTML='<div class="empty"><p>Планер открывается внутри Telegram. Зайдите в чат с ботом и нажмите кнопку «Планер».</p></div>';
+    return;
+  }
+  try{goals=JSON.parse(localStorage.getItem(LS)||'[]')||[]}catch(e){goals=[]}
+  if(!Array.isArray(goals))goals=[];
+  render();
+  call('GET','/api/state').then(function(s){
+    apply(s);
+    var tz=-new Date().getTimezoneOffset();
+    if(s.settings&&s.settings.tz!==tz)call('PUT','/api/settings',{tz:tz}).then(apply).catch(function(){});
+  }).catch(function(err){
+    ready=true; goals=[];
+    root.innerHTML='<div class="empty"><p>'+(err&&err.error==='no_token'?'Бот ещё не подключён к сервису. Нужно добавить его токен в настройках.':'Не удалось загрузить цели. Закройте планер и откройте его снова из чата с ботом.')+'</p></div>';
+  });
+}
+start();
+</script>
+</body></html>`;
+
+boot();
+console.log("START: порт", Bun.env.PORT || 3000);
+await setup();
