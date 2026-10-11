@@ -265,14 +265,14 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Цели и сроки</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap">
 <style>
 :root{
   --bg:#F2F4EF; --surface:#FFFFFF; --ink:#10241B; --muted:#5C6B62; --line:#D9DFD6;
   --accent:#006039; --accent-ink:#FFFFFF; --soon:#8C6A1E; --late:#A63D32; --track:#DDE4DB;
   --hero:#006039; --hero-ink:#F6F3E8; --hero-muted:#B9D1C4; --hero-gold:#E3C98A; --hero-cell:rgba(0,0,0,.2); --hero-line:rgba(255,255,255,.2); --gold-ink:#0A2018;
-  --display:"Playfair Display",Georgia,"Times New Roman",serif;
-  --body:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --display:"Montserrat",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --body:"Montserrat",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
   --bg:#061C14; --surface:#0B2A1E; --ink:#EDF2EC; --muted:#93A89B; --line:#17402F;
@@ -286,7 +286,7 @@ html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--body)}
 .wrap{max-width:560px;margin:0 auto;padding-inline:16px;padding-block:calc(16px + env(safe-area-inset-top,0px)) calc(40px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:20px}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-h1{font:700 1.5rem/1.15 var(--display);margin:0}
+h1{font:800 1.35rem/1.15 var(--display);margin:0;letter-spacing:-.02em}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;border-radius:10px}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn{padding:10px 16px;font-weight:500;border:1px solid var(--line);background:var(--surface);min-height:44px}
@@ -299,7 +299,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .hero h2{margin:0;font:600 1.35rem/1.25 var(--body);text-wrap:balance;overflow-wrap:anywhere}
 .clock{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .cell{background:var(--bg);border-radius:12px;padding:12px 4px 8px;text-align:center;min-width:0}
-.num{display:block;font:700 clamp(1.5rem,7.5vw,2.3rem)/1.1 var(--display);font-variant-numeric:tabular-nums;color:var(--state)}
+.num{display:block;font:800 clamp(1.5rem,7.5vw,2.3rem)/1.1 var(--display);letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--state)}
 .lbl{font-size:.75rem;color:var(--muted)}
 .bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
 .bar i{display:block;height:100%;background:var(--state);border-radius:3px}
@@ -349,7 +349,8 @@ label{display:flex;flex-direction:column;gap:6px;font-size:.875rem;color:var(--m
 input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%;min-height:44px}
 .remind select{background:var(--surface)}
 .actions{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
-.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));margin:0 auto;max-width:420px;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:.9375rem;text-align:center}
+#fx{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:5}
+.toast{z-index:6;position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));margin:0 auto;max-width:420px;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:.9375rem;text-align:center}
 </style></head>
 <body>
 <div class="wrap">
@@ -402,6 +403,7 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
     </div>
   </form>
 </dialog>
+<canvas id="fx" hidden></canvas>
 <div class="toast" id="toast" hidden role="status"></div>
 
 <script>
@@ -502,6 +504,37 @@ function tick(){
 setInterval(tick,1000); setInterval(render,60000);
 document.addEventListener('visibilitychange',function(){if(!document.hidden)render()});
 
+var ac=null;
+function winSound(){
+  try{
+    var AC=window.AudioContext||window.webkitAudioContext; if(!AC)return;
+    ac=ac||new AC(); if(ac.state==='suspended')ac.resume();
+    var t=ac.currentTime+0.03, out=ac.createGain(); out.gain.value=0.6; out.connect(ac.destination);
+    var ping=function(f,at,dur,type,vol){
+      var o=ac.createOscillator(), g=ac.createGain();
+      o.type=type; o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,at); g.gain.exponentialRampToValueAtTime(vol,at+0.012); g.gain.exponentialRampToValueAtTime(0.0001,at+dur);
+      o.connect(g); g.connect(out); o.start(at); o.stop(at+dur+0.05);
+    };
+    ping(1568,t,0.12,'square',0.10); ping(2093,t+0.08,0.45,'square',0.09); ping(4186,t+0.08,0.4,'sine',0.08);
+    [523.25,659.25,783.99,1046.5,1318.5,1568].forEach(function(f,i){ping(f,t+0.22+i*0.07,0.5,'triangle',0.24);ping(f*2,t+0.22+i*0.07,0.3,'sine',0.07)});
+    [1046.5,1318.5,1568,2093].forEach(function(f){ping(f,t+0.7,1.5,'sine',0.15);ping(f*2.01,t+0.7,1.1,'sine',0.04)});
+    ping(130.81,t+0.7,0.5,'sine',0.4);
+  }catch(e){}
+}
+function confetti(){
+  if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  var c=$('fx'), x=c.getContext('2d'), w=c.width=innerWidth, h=c.height=innerHeight, t0=Date.now();
+  var col=['#E3C98A','#F6F3E8','#006039','#C9A24B','#2E9A6B'], ps=[];
+  for(var i=0;i<140;i++){var a=Math.random()*Math.PI*2, v=6+Math.random()*12;ps.push({x:w/2,y:h*0.42,vx:Math.cos(a)*v,vy:Math.sin(a)*v-7,s:5+Math.random()*7,r:Math.random()*6,c:col[i%col.length]})}
+  c.hidden=false;
+  (function step(){
+    var k=(Date.now()-t0)/1900; x.clearRect(0,0,w,h);
+    if(k>=1){c.hidden=true;return}
+    ps.forEach(function(p){p.vy+=0.45;p.vx*=0.985;p.x+=p.vx;p.y+=p.vy;p.r+=0.2;x.save();x.globalAlpha=1-k*k;x.translate(p.x,p.y);x.rotate(p.r);x.fillStyle=p.c;x.fillRect(-p.s/2,-p.s/4,p.s,p.s/2);x.restore()});
+    requestAnimationFrame(step);
+  })();
+}
 function toast(t){var e=$('toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){e.hidden=true},4000)}
 function hint(){
   if(!settings)return;
@@ -564,7 +597,7 @@ root.addEventListener('click',function(e){
   else if(!g)return;
   else if(b.dataset.act==='toggle'){openId=openId===g.id?'':g.id;picked=true;render()}
   else if(b.dataset.act==='edit')openForm(g);
-  else if(b.dataset.act==='done')send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Готово. Цель закрыта.');
+  else if(b.dataset.act==='done'){winSound();confetti();send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Цель закрыта. Так держать!')}
   else if(b.dataset.act==='undo')send('PUT','/api/goals/'+g.id,payload(g,{done:false}));
 });
 function saveSettings(){send('PUT','/api/settings',{mode:$('sMode').value,hour:Number($('sHour').value),tz:-new Date().getTimezoneOffset()})}
