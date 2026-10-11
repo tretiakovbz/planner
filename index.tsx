@@ -172,7 +172,7 @@ async function tick() {
 
 // Аватар бота ставится один раз; отметка об этом хранится в базе.
 async function avatar() {
-  const KEY = "avatar_v2";
+  const KEY = "avatar_v3";
   try {
     if (db.query("SELECT v FROM meta WHERE k=?").get(KEY)) return;
     const f = Bun.file(import.meta.dir + "/avatar.jpg");
@@ -269,18 +269,21 @@ const PAGE = `<!doctype html>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap">
 <style>
 :root{
-  --bg:#F5FBF8; --surface:#FFFFFF; --ink:#0E2A1F; --muted:#5B6F66; --line:#D7EADF;
-  --accent:#0C8559; --soon:#96590A; --late:#B3402F; --track:#DDF1E7;
-  --hero:#3DD392; --hero-ink:#06241A; --hero-muted:#0F4A35; --hero-gold:#06241A; --hero-cell:rgba(255,255,255,.4); --hero-line:rgba(6,36,26,.22); --gold-ink:#FFFFFF;
+  --bg:#F5EFE0; --surface:#FFFBF2; --ink:#0B3B2C; --muted:#5F7065; --line:#E0D7C0;
+  --accent:#046648; --soon:#046648; --late:#046648; --track:#E6DDC7;
+  --btn:#046648; --btn-ink:#F5EFE0;
+  --hero:#046648; --hero-ink:#F5EFE0; --hero-muted:#C3D3C4; --hero-gold:#F5EFE0; --hero-cell:rgba(0,0,0,.2); --hero-line:rgba(245,239,224,.25); --gold-ink:#04553C;
   --display:"Montserrat",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --body:"Montserrat",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
-  --bg:#0A1612; --surface:#11231C; --ink:#E9F5EF; --muted:#8FA89C; --line:#1D3A2E;
-  --accent:#3DD392; --soon:#F0C36A; --late:#F09A8C; --track:#1D3A2E; color-scheme:dark } }
+  --bg:#06241A; --surface:#0B3327; --ink:#F5EFE0; --muted:#A8B8A8; --line:#15483A;
+  --accent:#F5EFE0; --soon:#F5EFE0; --late:#F5EFE0; --track:#15483A;
+  --btn:#F5EFE0; --btn-ink:#04553C; color-scheme:dark } }
 :root[data-theme="dark"]{
-  --bg:#0A1612; --surface:#11231C; --ink:#E9F5EF; --muted:#8FA89C; --line:#1D3A2E;
-  --accent:#3DD392; --soon:#F0C36A; --late:#F09A8C; --track:#1D3A2E; color-scheme:dark }
+  --bg:#06241A; --surface:#0B3327; --ink:#F5EFE0; --muted:#A8B8A8; --line:#15483A;
+  --accent:#F5EFE0; --soon:#F5EFE0; --late:#F5EFE0; --track:#15483A;
+  --btn:#F5EFE0; --btn-ink:#04553C; color-scheme:dark }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
@@ -291,7 +294,7 @@ h1{font:800 1.35rem/1.15 var(--display);margin:0;letter-spacing:-.02em}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;border-radius:10px}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn{padding:10px 16px;font-weight:500;border:1px solid var(--line);background:var(--surface);min-height:44px}
-.btn.primary{background:var(--hero);color:var(--hero-ink);border-color:transparent;font-weight:600}
+.btn.primary{background:var(--btn);color:var(--btn-ink);border-color:transparent;font-weight:600}
 .btn.quiet{border-color:transparent;background:none;color:var(--muted);padding-inline:10px}
 .btn.danger{color:var(--late)}
 .hero{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:20px;display:flex;flex-direction:column;gap:14px;--state:var(--accent)}
@@ -419,7 +422,7 @@ function theme(){
   if(!tgApp)return;
   var t=tgApp.colorScheme==='dark'?'dark':'light';
   document.documentElement.dataset.theme=t;
-  var c=t==='dark'?'#0A1612':'#F5FBF8';
+  var c=t==='dark'?'#06241A':'#F5EFE0';
   try{tgApp.setHeaderColor(c);tgApp.setBackgroundColor(c)}catch(e){}
 }
 if(tgApp){try{tgApp.ready();tgApp.expand();tgApp.onEvent('themeChanged',theme)}catch(e){} theme()}
@@ -528,7 +531,7 @@ function winSound(){
 function confetti(){
   if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
   var c=$('fx'), x=c.getContext('2d'), w=c.width=innerWidth, h=c.height=innerHeight, t0=Date.now();
-  var col=['#3DD392','#06241A','#9BE8C6','#0C8559','#FFFFFF'], ps=[];
+  var col=['#046648','#F5EFE0','#2E8B6B','#E4D9BF','#0B3327'], ps=[];
   for(var i=0;i<140;i++){var a=Math.random()*Math.PI*2, v=6+Math.random()*12;ps.push({x:w/2,y:h*0.42,vx:Math.cos(a)*v,vy:Math.sin(a)*v-7,s:5+Math.random()*7,r:Math.random()*6,c:col[i%col.length]})}
   c.hidden=false;
   (function step(){
