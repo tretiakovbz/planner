@@ -326,6 +326,12 @@ details summary{cursor:pointer;font-size:.875rem;color:var(--muted);padding:8px 
 .empty p{margin:0;color:var(--muted);max-width:34ch}
 .remind{border-top:1px solid var(--line);padding-top:20px;display:flex;flex-direction:column;gap:12px}
 .remind .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.remind .snd{grid-template-columns:1fr auto;align-items:end}
+.grp{display:flex;flex-direction:column;gap:6px}
+.lab{font-size:.875rem;color:var(--muted)}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
+.seg button{min-height:44px;padding:8px 4px;font-size:.8125rem;font-weight:500;border-radius:0}
+.seg button[aria-pressed="true"]{background:var(--btn);color:var(--btn-ink);font-weight:600}
 .remind p{margin:0;font-size:.8125rem;color:var(--muted)}
 
 .brand{display:flex;align-items:center;gap:10px;min-width:0}
@@ -382,6 +388,28 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
     </div>
     <p id="sHint"></p>
   </section>
+  <section class="remind" id="prefs">
+    <h3>Оформление и звук</h3>
+    <div class="grp"><span class="lab" id="labTheme">Тема</span>
+      <div class="seg" id="segTheme" role="group" aria-labelledby="labTheme">
+        <button type="button" data-v="auto">Как в Telegram</button>
+        <button type="button" data-v="light">Светлая</button>
+        <button type="button" data-v="dark">Темная</button>
+      </div>
+    </div>
+    <div class="fields snd">
+      <label>Звук при достижении цели
+        <select id="pSound">
+          <option value="win">Победа</option>
+          <option value="cash">Касса</option>
+          <option value="fanfare">Фанфары</option>
+          <option value="chime">Колокольчики</option>
+          <option value="off">Без звука</option>
+        </select>
+      </label>
+      <button type="button" class="btn" id="pTry">Прослушать</button>
+    </div>
+  </section>
 </div>
 
 <dialog id="dlg">
@@ -418,14 +446,23 @@ var tgApp=window.Telegram&&window.Telegram.WebApp, initData=tgApp&&tgApp.initDat
 var LS='goals-tg-v1';
 var goals=[], settings=null, ready=false, editing=null, busy=false;
 
+var prefs={theme:'auto',sound:'win'};
+function readPrefs(v){try{var o=JSON.parse(v||'{}');if(o.theme)prefs.theme=o.theme;if(o.sound)prefs.sound=o.sound}catch(e){}}
+try{readPrefs(localStorage.getItem('prefs'))}catch(e){}
+function savePrefs(){
+  var v=JSON.stringify(prefs);
+  try{localStorage.setItem('prefs',v)}catch(e){}
+  try{tgApp.CloudStorage.setItem('prefs',v)}catch(e){}
+}
 function theme(){
-  if(!tgApp)return;
-  var t=tgApp.colorScheme==='dark'?'dark':'light';
+  var sys=tgApp&&tgApp.colorScheme?tgApp.colorScheme:(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+  var t=prefs.theme==='auto'?(sys==='dark'?'dark':'light'):prefs.theme;
   document.documentElement.dataset.theme=t;
   var c=t==='dark'?'#06241A':'#F5EFE0';
   try{tgApp.setHeaderColor(c);tgApp.setBackgroundColor(c)}catch(e){}
 }
-if(tgApp){try{tgApp.ready();tgApp.expand();tgApp.onEvent('themeChanged',theme)}catch(e){} theme()}
+if(tgApp){try{tgApp.ready();tgApp.expand();tgApp.onEvent('themeChanged',theme)}catch(e){}}
+theme();
 function buzz(){try{tgApp.HapticFeedback.notificationOccurred('success')}catch(e){}}
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -511,7 +548,9 @@ setInterval(tick,1000); setInterval(render,60000);
 document.addEventListener('visibilitychange',function(){if(!document.hidden)render()});
 
 var ac=null;
-function winSound(){
+function playSound(name){
+  name=name||prefs.sound;
+  if(name==='off')return;
   try{
     var AC=window.AudioContext||window.webkitAudioContext; if(!AC)return;
     ac=ac||new AC(); if(ac.state==='suspended')ac.resume();
@@ -522,10 +561,32 @@ function winSound(){
       g.gain.setValueAtTime(0.0001,at); g.gain.exponentialRampToValueAtTime(vol,at+0.012); g.gain.exponentialRampToValueAtTime(0.0001,at+dur);
       o.connect(g); g.connect(out); o.start(at); o.stop(at+dur+0.05);
     };
-    ping(1568,t,0.12,'square',0.10); ping(2093,t+0.08,0.45,'square',0.09); ping(4186,t+0.08,0.4,'sine',0.08);
-    [523.25,659.25,783.99,1046.5,1318.5,1568].forEach(function(f,i){ping(f,t+0.22+i*0.07,0.5,'triangle',0.24);ping(f*2,t+0.22+i*0.07,0.3,'sine',0.07)});
-    [1046.5,1318.5,1568,2093].forEach(function(f){ping(f,t+0.7,1.5,'sine',0.15);ping(f*2.01,t+0.7,1.1,'sine',0.04)});
-    ping(130.81,t+0.7,0.5,'sine',0.4);
+    var hiss=function(at,dur,vol){
+      var n=Math.floor(ac.sampleRate*dur), b=ac.createBuffer(1,n,ac.sampleRate), d=b.getChannelData(0);
+      for(var i=0;i<n;i++)d[i]=Math.random()*2-1;
+      var src=ac.createBufferSource(), g=ac.createGain(), hp=ac.createBiquadFilter();
+      src.buffer=b; hp.type='highpass'; hp.frequency.value=4000;
+      g.gain.setValueAtTime(vol,at); g.gain.exponentialRampToValueAtTime(0.0001,at+dur);
+      src.connect(hp); hp.connect(g); g.connect(out); src.start(at);
+    };
+    if(name==='cash'){
+      hiss(t,0.09,0.3);
+      ping(2637,t+0.05,0.9,'sine',0.22); ping(3520,t+0.05,0.7,'sine',0.12); ping(5274,t+0.05,0.5,'sine',0.06);
+      for(var i=0;i<10;i++)ping(3000+Math.random()*3000,t+0.26+i*0.045,0.12,'square',0.05);
+      ping(2093,t+0.74,1.2,'sine',0.2); ping(3136,t+0.74,1.0,'sine',0.12);
+    }else if(name==='fanfare'){
+      [[392,0,0.16],[523.25,0.18,0.16],[659.25,0.36,0.16],[783.99,0.54,0.5],[659.25,1.06,0.14],[783.99,1.22,1.1]].forEach(function(x){
+        ping(x[0],t+x[1],x[2]+0.08,'sawtooth',0.11); ping(x[0],t+x[1],x[2]+0.08,'triangle',0.2); ping(x[0]*2,t+x[1],x[2],'sine',0.05);
+      });
+      [261.63,329.63,392].forEach(function(f){ping(f,t+1.22,1.1,'triangle',0.12)});
+    }else if(name==='chime'){
+      [783.99,987.77,1174.66,1567.98].forEach(function(f,i){ping(f,t+i*0.16,1.6,'sine',0.2);ping(f*2.76,t+i*0.16,0.6,'sine',0.03)});
+    }else{
+      ping(1568,t,0.12,'square',0.10); ping(2093,t+0.08,0.45,'square',0.09); ping(4186,t+0.08,0.4,'sine',0.08);
+      [523.25,659.25,783.99,1046.5,1318.5,1568].forEach(function(f,i){ping(f,t+0.22+i*0.07,0.5,'triangle',0.24);ping(f*2,t+0.22+i*0.07,0.3,'sine',0.07)});
+      [1046.5,1318.5,1568,2093].forEach(function(f){ping(f,t+0.7,1.5,'sine',0.15);ping(f*2.01,t+0.7,1.1,'sine',0.04)});
+      ping(130.81,t+0.7,0.5,'sine',0.4);
+    }
   }catch(e){}
 }
 function confetti(){
@@ -603,12 +664,22 @@ root.addEventListener('click',function(e){
   else if(!g)return;
   else if(b.dataset.act==='toggle'){openId=openId===g.id?'':g.id;picked=true;render()}
   else if(b.dataset.act==='edit')openForm(g);
-  else if(b.dataset.act==='done'){winSound();confetti();send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Цель закрыта. Так держать!')}
+  else if(b.dataset.act==='done'){playSound();confetti();send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Цель закрыта. Так держать!')}
   else if(b.dataset.act==='undo')send('PUT','/api/goals/'+g.id,payload(g,{done:false}));
 });
 function saveSettings(){send('PUT','/api/settings',{mode:$('sMode').value,hour:Number($('sHour').value),tz:-new Date().getTimezoneOffset()})}
 $('sMode').onchange=saveSettings; $('sHour').onchange=saveSettings;
 (function(){var h='';for(var i=6;i<=23;i++)h+='<option value="'+i+'">'+String(i).padStart(2,'0')+':00</option>';$('sHour').innerHTML=h})();
+
+function syncPrefs(){
+  $('segTheme').querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.v===prefs.theme))});
+  $('pSound').value=prefs.sound; $('pTry').disabled=prefs.sound==='off';
+}
+$('segTheme').onclick=function(e){var b=e.target.closest('button');if(!b)return;prefs.theme=b.dataset.v;savePrefs();theme();syncPrefs()};
+$('pSound').onchange=function(){prefs.sound=$('pSound').value;savePrefs();syncPrefs();playSound()};
+$('pTry').onclick=function(){playSound()};
+syncPrefs();
+try{tgApp.CloudStorage.getItem('prefs',function(err,v){if(!err&&v){readPrefs(v);theme();syncPrefs()}})}catch(e){}
 
 function start(){
   if(!initData){
