@@ -29,13 +29,14 @@ type Goal = { id: number; user_id: number; title: string; deadline: string; step
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 
-function ensureUser(id: number, name: string): User {
+const OWNER = (Bun.env.OWNER_USERNAME || "tretiakovbz").toLowerCase();
+function ensureUser(id: number, name: string, username = ""): User {
   db.run("INSERT INTO users(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name", [id, name || ""]);
-  seed(id);
+  if (String(username).toLowerCase() === OWNER) seed(id);
   return db.query("SELECT * FROM users WHERE id=?").get(id) as User;
 }
 
-// Разовый перенос стартового списка целей: достается первому пользователю, открывшему бота.
+// Разовый перенос стартового списка целей: достается только владельцу (OWNER_USERNAME).
 // Сам список лежит в переменной окружения SEED_JSON, а не в коде.
 function seed(userId: number) {
   const raw = Bun.env.SEED_JSON;
@@ -70,7 +71,7 @@ function auth(req: Request): User | null {
   try {
     const u = JSON.parse(p.get("user") || "{}");
     if (!u.id) return null;
-    return ensureUser(Number(u.id), String(u.first_name || ""));
+    return ensureUser(Number(u.id), String(u.first_name || ""), String(u.username || ""));
   } catch { return null; }
 }
 
@@ -142,7 +143,7 @@ const openBtn = () => APP_URL ? { reply_markup: { inline_keyboard: [[{ text: "О
 async function onUpdate(up: any) {
   const m = up?.message;
   if (!m?.chat || m.chat.type !== "private" || !m.from) return;
-  const u = ensureUser(Number(m.from.id), String(m.from.first_name || ""));
+  const u = ensureUser(Number(m.from.id), String(m.from.first_name || ""), String(m.from.username || ""));
   const text = String(m.text || "");
   if (text.startsWith("/left")) {
     const s = summary(u, false);
