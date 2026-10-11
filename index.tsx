@@ -173,7 +173,7 @@ async function tick() {
 
 // Аватар бота ставится один раз; отметка об этом хранится в базе.
 async function avatar() {
-  const KEY = "avatar_v3";
+  const KEY = "avatar_v4";
   try {
     if (db.query("SELECT v FROM meta WHERE k=?").get(KEY)) return;
     const f = Bun.file(import.meta.dir + "/avatar.jpg");
