@@ -35,7 +35,7 @@ function ensureUser(id: number, name: string): User {
   return db.query("SELECT * FROM users WHERE id=?").get(id) as User;
 }
 
-// Разовый перенос стартового списка целей: достаётся первому пользователю, открывшему бота.
+// Разовый перенос стартового списка целей: достается первому пользователю, открывшему бота.
 // Сам список лежит в переменной окружения SEED_JSON, а не в коде.
 function seed(userId: number) {
   const raw = Bun.env.SEED_JSON;
@@ -96,7 +96,7 @@ const pl = (n: number, f: string[]) => { const a = n % 100, b = n % 10; return a
 const DAYS = ["день", "дня", "дней"], HRS = ["час", "часа", "часов"];
 function dueMs(deadline: string, tz: number) { const [y, m, d] = deadline.split("-").map(Number); return Date.UTC(y, m - 1, d, 23, 59, 59) - tz * 60000; }
 function leftText(ms: number) {
-  if (ms < 0) return "срок прошёл";
+  if (ms < 0) return "срок прошел";
   const h = Math.floor(ms / 3600000), d = Math.floor(h / 24);
   if (d >= 7) return d + " " + pl(d, DAYS);
   if (d >= 1) return d + " " + pl(d, DAYS) + " " + (h % 24) + " ч";
@@ -104,12 +104,12 @@ function leftText(ms: number) {
 }
 function softLine(ms: number) {
   const d = Math.floor(ms / 86400000);
-  if (ms < 0) return "Срок прошёл, и это не провал. Дату можно сдвинуть или закрыть цель как есть.";
+  if (ms < 0) return "Срок прошел, и это не провал. Дату можно сдвинуть или закрыть цель как есть.";
   if (d < 1) return "Финишная прямая. Одного спокойного подхода может хватить.";
   if (d < 3) return "Хорошее время, чтобы закончить главное и не трогать мелочи.";
   if (d < 8) return "Один небольшой шаг сегодня заметно разгрузит конец недели.";
   if (d < 31) return "Запас есть, достаточно двигаться понемногу.";
-  return "Времени много, можно идти в своём темпе.";
+  return "Времени много, можно идти в своем темпе.";
 }
 function summary(u: User, onlyNear: boolean) {
   const now = Date.now();
@@ -120,7 +120,7 @@ function summary(u: User, onlyNear: boolean) {
   if (onlyNear) list = list.filter(x => x.ms < 7 * 86400000);
   if (!list.length) return "";
   const lines = list.slice(0, 6).map(x => "• " + x.g.title + ": " + leftText(x.ms));
-  if (list.length > 6) lines.push("…и ещё " + (list.length - 6));
+  if (list.length > 6) lines.push("…и еще " + (list.length - 6));
   const first = list.find(x => x.ms >= 0) || list[0];
   let t = lines.join("\n") + "\n\n" + softLine(first.ms);
   if (first.g.step) t += "\nБлижайший шаг: " + first.g.step;
@@ -148,7 +148,7 @@ async function onUpdate(up: any) {
     const s = summary(u, false);
     await tg("sendMessage", { chat_id: u.id, text: s || "Активных целей сейчас нет. Можно выдохнуть или поставить следующую.", ...openBtn() });
   } else {
-    await tg("sendMessage", { chat_id: u.id, text: "Здесь живёт планер целей с обратным отсчётом.\n\nОткройте его кнопкой ниже и добавьте цель. Раз в день я буду коротко и спокойно напоминать, сколько времени осталось. Время и частоту можно поменять внутри планера.\n\n/left покажет остаток по всем целям.", ...openBtn() });
+    await tg("sendMessage", { chat_id: u.id, text: "Привет! Это планер целей с обратным отсчетом.\n\nДобавьте цель и срок. Я покажу, сколько времени осталось, и раз в день коротко напомню об этом.\n\nНажмите кнопку ниже, чтобы начать. Команда /left покажет остаток по всем целям.", ...openBtn() });
   }
 }
 
@@ -170,11 +170,31 @@ async function tick() {
   return sent;
 }
 
+// Аватар бота ставится один раз; отметка об этом хранится в базе.
+async function avatar() {
+  const KEY = "avatar_v1";
+  try {
+    if (db.query("SELECT v FROM meta WHERE k=?").get(KEY)) return;
+    const f = Bun.file(import.meta.dir + "/avatar.jpg");
+    if (!(await f.exists())) { console.log("AVATAR: файл не найден"); return; }
+    const fd = new FormData();
+    fd.append("photo", JSON.stringify({ type: "static", photo: "attach://ava" }));
+    fd.append("ava", new File([await f.arrayBuffer()], "avatar.jpg", { type: "image/jpeg" }));
+    const r = await fetch("https://api.telegram.org/bot" + TOKEN + "/setMyProfilePhoto", { method: "POST", body: fd });
+    const j: any = await r.json();
+    console.log("AVATAR:", j.ok ? "ok" : "ошибка: " + j.description);
+    if (j.ok) db.run("INSERT INTO meta(k,v) VALUES(?,'1')", [KEY]);
+  } catch (e) { console.error("AVATAR:", String(e)); }
+}
+
 async function setup() {
   if (!TOKEN || !APP_URL) { console.log("SETUP: жду", !TOKEN ? "BOT_TOKEN" : "публичный домен"); return; }
   const a = await tg("setWebhook", { url: APP_URL + "tg/" + HOOK, secret_token: HOOK, allowed_updates: ["message"] });
   const b = await tg("setChatMenuButton", { menu_button: { type: "web_app", text: "Планер", web_app: { url: APP_URL } } });
   await tg("setMyCommands", { commands: [{ command: "start", description: "Открыть планер" }, { command: "left", description: "Сколько осталось по целям" }] });
+  await tg("setMyDescription", { description: "Планер целей с обратным отсчетом.\n\n• Добавьте цель и срок\n• Смотрите, сколько времени осталось\n• Получайте спокойные напоминания, без спама\n\nНажмите «Запустить», чтобы начать." });
+  await tg("setMyShortDescription", { short_description: "Цели, сроки и обратный отсчет. Спокойные напоминания о том, сколько времени осталось." });
+  await avatar();
   console.log("SETUP: webhook", a?.ok ? "ok" : "ошибка", "| кнопка меню", b?.ok ? "ok" : "ошибка", "| хранилище", persistent ? "постоянное" : "В ПАМЯТИ");
 }
 
@@ -207,7 +227,7 @@ async function api(req: Request, path: string) {
     const mode = ["off", "daily", "weekly", "near"].includes(body?.mode) ? body.mode : u.mode;
     const hour = Number.isInteger(body?.hour) && body.hour >= 0 && body.hour <= 23 ? body.hour : u.hour;
     const tz = Number.isInteger(body?.tz) && Math.abs(body.tz) <= 840 ? body.tz : u.tz;
-    // Если выбранный час сегодня уже прошёл, первое напоминание придёт завтра, а не сразу.
+    // Если выбранный час сегодня уже прошел, первое напоминание придет завтра, а не сразу.
     const local = new Date(Date.now() + tz * 60000);
     const last = hour !== u.hour && local.getUTCHours() >= hour ? local.toISOString().slice(0, 10) : u.last_sent;
     db.run("UPDATE users SET mode=?,hour=?,tz=?,last_sent=? WHERE id=?", [mode, hour, tz, last, u.id]);
@@ -240,32 +260,33 @@ const boot = () => Bun.serve({
 });
 
 // ---------- Страница ----------
-const PAGE = String.raw`<!doctype html>
+const PAGE = `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Цели и сроки</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Playfair+Display:wght@600;700&display=swap">
 <style>
 :root{
-  --bg:#EDF2EF; --surface:#FBFDFC; --ink:#1B2B27; --muted:#5E716A; --line:#D5DFDA;
-  --accent:#1C7566; --accent-ink:#FFFFFF; --soon:#9A6410; --late:#A9483F; --track:#DCE6E1;
-  --display:"Unbounded","Golos Text",system-ui,sans-serif;
+  --bg:#F2F4EF; --surface:#FFFFFF; --ink:#10241B; --muted:#5C6B62; --line:#D9DFD6;
+  --accent:#006039; --accent-ink:#FFFFFF; --soon:#8C6A1E; --late:#A63D32; --track:#DDE4DB;
+  --hero:#006039; --hero-ink:#F6F3E8; --hero-muted:#B9D1C4; --hero-gold:#E3C98A; --hero-cell:rgba(0,0,0,.2); --hero-line:rgba(255,255,255,.2); --gold-ink:#0A2018;
+  --display:"Playfair Display",Georgia,"Times New Roman",serif;
   --body:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
-  --bg:#111A18; --surface:#18231F; --ink:#E4ECE8; --muted:#8FA39B; --line:#26352F;
-  --accent:#5CC2AE; --accent-ink:#0C1F1B; --soon:#E0B25A; --late:#E08A84; --track:#22302B; color-scheme:dark } }
+  --bg:#061C14; --surface:#0B2A1E; --ink:#EDF2EC; --muted:#93A89B; --line:#17402F;
+  --accent:#E3C98A; --accent-ink:#0A2018; --soon:#E3C98A; --late:#EE9D92; --track:#17402F; --hero:#0A4A30; color-scheme:dark } }
 :root[data-theme="dark"]{
-  --bg:#111A18; --surface:#18231F; --ink:#E4ECE8; --muted:#8FA39B; --line:#26352F;
-  --accent:#5CC2AE; --accent-ink:#0C1F1B; --soon:#E0B25A; --late:#E08A84; --track:#22302B; color-scheme:dark }
+  --bg:#061C14; --surface:#0B2A1E; --ink:#EDF2EC; --muted:#93A89B; --line:#17402F;
+  --accent:#E3C98A; --accent-ink:#0A2018; --soon:#E3C98A; --late:#EE9D92; --track:#17402F; --hero:#0A4A30; color-scheme:dark }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--body)}
 .wrap{max-width:560px;margin:0 auto;padding-inline:16px;padding-block:calc(16px + env(safe-area-inset-top,0px)) calc(40px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:20px}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-h1{font:700 1.15rem/1.2 var(--display);margin:0;letter-spacing:-.01em}
+h1{font:700 1.5rem/1.15 var(--display);margin:0}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;border-radius:10px}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn{padding:10px 16px;font-weight:500;border:1px solid var(--line);background:var(--surface);min-height:44px}
@@ -278,7 +299,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .hero h2{margin:0;font:600 1.35rem/1.25 var(--body);text-wrap:balance;overflow-wrap:anywhere}
 .clock{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .cell{background:var(--bg);border-radius:12px;padding:12px 4px 8px;text-align:center;min-width:0}
-.num{display:block;font:700 clamp(1.4rem,7vw,2.2rem)/1.1 var(--display);font-variant-numeric:tabular-nums;color:var(--state)}
+.num{display:block;font:700 clamp(1.5rem,7.5vw,2.3rem)/1.1 var(--display);font-variant-numeric:tabular-nums;color:var(--state)}
 .lbl{font-size:.75rem;color:var(--muted)}
 .bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
 .bar i{display:block;height:100%;background:var(--state);border-radius:3px}
@@ -302,7 +323,25 @@ details summary{cursor:pointer;font-size:.875rem;color:var(--muted);padding:8px 
 .remind{border-top:1px solid var(--line);padding-top:20px;display:flex;flex-direction:column;gap:12px}
 .remind .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .remind p{margin:0;font-size:.8125rem;color:var(--muted)}
-dialog{border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--ink);padding:20px;width:min(100% - 32px,440px)}
+
+.goals{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.goal{background:var(--surface);border:1px solid var(--line);border-radius:16px;--state:var(--accent)}
+.head{display:flex;flex-direction:column;gap:8px;width:100%;text-align:left;padding:14px 16px;border-radius:16px}
+.head .eyebrow{color:var(--muted)}
+.head .top{align-items:flex-start}
+.panel{display:flex;flex-direction:column;gap:14px;padding:2px 16px 16px}
+.goal.open{background:var(--hero);color:var(--hero-ink);border-color:transparent}
+.goal.open .head .eyebrow,.goal.open .pill,.goal.open .num{color:var(--hero-gold)}
+.goal.open .t{font-size:1.2rem;font-weight:600;line-height:1.25}
+.goal.open .cell{background:var(--hero-cell)}
+.goal.open .lbl,.goal.open .meta{color:var(--hero-muted)}
+.goal.open .bar{background:var(--hero-cell)}
+.goal.open .bar i{background:var(--hero-gold)}
+.goal.open .note{border-top-color:var(--hero-line)}
+.goal.open button:focus-visible{outline-color:var(--hero-gold)}
+.btn.gold{background:var(--hero-gold);color:var(--gold-ink);border-color:transparent}
+.btn.ghost{background:transparent;color:var(--hero-ink);border-color:var(--hero-line)}
+dialog{max-height:calc(100% - 32px);overflow:auto;border:1px solid var(--line);border-radius:20px;background:var(--surface);color:var(--ink);padding:20px;width:min(100% - 32px,440px)}
 dialog::backdrop{background:rgba(10,20,17,.5)}
 form{display:flex;flex-direction:column;gap:14px}
 form h2{margin:0;font:600 1.125rem/1.3 var(--body)}
@@ -342,7 +381,7 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
   <form id="form">
     <h2 id="dlgTitle">Новая цель</h2>
     <label>Что нужно сделать
-      <input id="fTitle" required maxlength="120" placeholder="Например: сдать отчёт" autocomplete="off">
+      <input id="fTitle" required maxlength="120" placeholder="Например: сдать отчет" autocomplete="off">
     </label>
     <label>Срок
       <input id="fDate" type="date" required>
@@ -351,7 +390,7 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
       <input id="fCat" maxlength="40" placeholder="Например: Бизнес" autocomplete="off" list="cats">
       <datalist id="cats"></datalist>
     </label>
-    <label>Ближайший маленький шаг (необязательно)
+    <label>Описание или ближайший шаг (необязательно)
       <input id="fStep" maxlength="140" placeholder="Например: набросать план" autocomplete="off">
     </label>
     <div class="actions">
@@ -375,7 +414,7 @@ function theme(){
   if(!tgApp)return;
   var t=tgApp.colorScheme==='dark'?'dark':'light';
   document.documentElement.dataset.theme=t;
-  var c=t==='dark'?'#111A18':'#EDF2EF';
+  var c=t==='dark'?'#061C14':'#F2F4EF';
   try{tgApp.setHeaderColor(c);tgApp.setBackgroundColor(c)}catch(e){}
 }
 if(tgApp){try{tgApp.ready();tgApp.expand();tgApp.onEvent('themeChanged',theme)}catch(e){} theme()}
@@ -389,7 +428,7 @@ function due(g){var p=String(g.deadline).split('-').map(Number);return new Date(
 function parts(ms){var s=Math.floor(Math.max(0,ms)/1000);return{d:Math.floor(s/86400),h:Math.floor(s%86400/3600),m:Math.floor(s%3600/60),s:s%60}}
 function stateOf(ms){return ms<0?'late':ms<3*864e5?'soon':'calm'}
 function shortLeft(ms){
-  if(ms<0){var d=Math.ceil(-ms/864e5);return 'срок прошёл '+d+' '+pl(d,DAYS)+' назад'}
+  if(ms<0){var d=Math.ceil(-ms/864e5);return 'срок прошел '+d+' '+pl(d,DAYS)+' назад'}
   var p=parts(ms);
   if(p.d>=7)return p.d+' '+pl(p.d,DAYS);
   if(p.d>=1)return p.d+' '+pl(p.d,DAYS)+' '+p.h+' ч';
@@ -399,14 +438,26 @@ function pct(g){var a=Date.parse(g.created)||Date.now(),b=due(g);if(b<=a)return 
 function niceDate(g){var d=new Date(due(g));return d.toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:d.getFullYear()===new Date().getFullYear()?undefined:'numeric'})}
 function note(ms){
   var p=parts(ms), d=p.d;
-  if(ms<0)return 'Срок прошёл, и это не провал. Можно сдвинуть дату или закрыть цель как есть.';
+  if(ms<0)return 'Срок прошел, и это не провал. Можно сдвинуть дату или закрыть цель как есть.';
   if(d<1)return 'Финишная прямая: '+(p.h?'осталось '+p.h+' '+pl(p.h,HRS):'остался последний час')+'. Одного спокойного подхода может хватить.';
   if(d<3)return 'Осталось '+d+' '+pl(d,DAYS)+'. Хорошее время, чтобы закончить главное и не трогать мелочи.';
   if(d<8)return 'Впереди '+d+' '+pl(d,DAYS)+'. Один небольшой шаг сегодня заметно разгрузит конец недели.';
   if(d<31)return 'Осталось '+d+' '+pl(d,DAYS)+'. Запас есть, достаточно двигаться понемногу.';
-  return 'До срока '+d+' '+pl(d,DAYS)+'. Времени много, можно идти в своём темпе.';
+  return 'До срока '+d+' '+pl(d,DAYS)+'. Времени много, можно идти в своем темпе.';
 }
 
+var openId=null, picked=false;
+function panel(g,ms){
+  var p=pct(g);
+  return '<div class="panel">'
+    +'<div class="clock">'+[['d','дней'],['h','часов'],['m','минут'],['s','секунд']].map(function(u){return '<div class="cell"><span class="num" data-u="'+u[0]+'">0</span><span class="lbl">'+u[1]+'</span></div>'}).join('')+'</div>'
+    +'<div class="bar"><i style="width:'+p+'%"></i></div>'
+    +'<p class="meta">Срок '+esc(niceDate(g))+' · прошло '+p+'% времени</p>'
+    +(g.step?'<p class="step">'+esc(g.step)+'</p>':'')
+    +'<p class="note">'+esc(note(ms))+'</p>'
+    +'<div class="row"><button class="btn gold" data-act="done" data-id="'+esc(g.id)+'">Готово</button><button class="btn ghost" data-act="edit" data-id="'+esc(g.id)+'">Изменить</button></div>'
+    +'</div>';
+}
 function render(){
   if(!ready&&!goals.length)return;
   var act=goals.filter(function(g){return !g.done}).sort(function(a,b){return due(a)-due(b)});
@@ -415,33 +466,25 @@ function render(){
   var cats={};goals.forEach(function(g){if(g.cat)cats[g.cat]=1});
   $('cats').innerHTML=Object.keys(cats).map(function(c){return '<option value="'+esc(c)+'">'}).join('');
   if(!goals.length){
-    root.innerHTML='<div class="empty"><p>Здесь появится обратный отсчёт до вашей ближайшей цели.</p><button class="btn primary" data-act="new">Добавить первую цель</button></div>';
+    root.innerHTML='<div class="empty"><p>Добавьте первую цель и срок. Здесь появится обратный отсчет.</p><button class="btn primary" data-act="new">Добавить цель</button></div>';
     return;
   }
-  var now=Date.now(), hero=act.filter(function(g){return due(g)>=now})[0]||act[0], h='';
-  if(hero){
-    var ms=due(hero)-now, p=pct(hero);
-    h+='<section class="hero" data-state="'+stateOf(ms)+'" data-hero="'+esc(hero.id)+'">'
-      +'<p class="eyebrow">'+(ms<0?'Срок прошёл':'Ближайшая цель')+(hero.cat?' · '+esc(hero.cat):'')+'</p>'
-      +'<h2>'+esc(hero.title)+'</h2>'
-      +'<div class="clock">'+[['d','дней'],['h','часов'],['m','минут'],['s','секунд']].map(function(u){return '<div class="cell"><span class="num" data-u="'+u[0]+'">0</span><span class="lbl">'+u[1]+'</span></div>'}).join('')+'</div>'
-      +'<div class="bar"><i style="width:'+p+'%"></i></div>'
-      +'<p class="meta">Срок '+esc(niceDate(hero))+' · прошло '+p+'% времени</p>'
-      +(hero.step?'<p class="step"><b>Ближайший шаг:</b> '+esc(hero.step)+'</p>':'')
-      +'<p class="note">'+esc(note(ms))+'</p>'
-      +'<div class="row"><button class="btn primary" data-act="done" data-id="'+esc(hero.id)+'">Готово</button><button class="btn" data-act="edit" data-id="'+esc(hero.id)+'">Изменить</button></div>'
-      +'</section>';
+  var now=Date.now(), near=act.filter(function(g){return due(g)>=now})[0]||act[0], h='';
+  var known=act.some(function(g){return g.id===openId});
+  if(near&&(!picked||(openId&&!known)))openId=near.id;
+  if(act.length){
+    h+='<ul class="goals">'+act.map(function(g){
+      var ms=due(g)-now, open=g.id===openId;
+      var tag=(g.cat||'Цель')+(g===near?' · ближайшая':'');
+      return '<li class="goal'+(open?' open':'')+'" data-state="'+stateOf(ms)+'" data-goal="'+esc(g.id)+'">'
+        +'<button class="head" data-act="toggle" data-id="'+esc(g.id)+'" aria-expanded="'+open+'">'
+        +'<span class="eyebrow">'+esc(tag)+'</span>'
+        +'<span class="top"><span class="t">'+esc(g.title)+'</span><span class="pill">'+esc(shortLeft(ms))+'</span></span>'
+        +(open?'':'<span class="bar"><i style="width:'+pct(g)+'%"></i></span>')
+        +'</button>'+(open?panel(g,ms):'')+'</li>';
+    }).join('')+'</ul>';
   }else{
     h+='<div class="empty"><p>Все цели закрыты. Можно выдохнуть или поставить следующую.</p></div>';
-  }
-  var rest=act.filter(function(g){return g!==hero});
-  if(rest.length){
-    h+='<section style="margin-top:24px"><h3>Остальные цели</h3><ul class="list">'+rest.map(function(g){
-      var ms=due(g)-now;
-      return '<li data-state="'+stateOf(ms)+'"><div class="top"><span class="t">'+esc(g.title)+'</span><span class="pill">'+esc(shortLeft(ms))+'</span></div>'
-        +'<div class="bar"><i style="width:'+pct(g)+'%"></i></div>'
-        +'<div class="sub"><span>до '+esc(niceDate(g))+(g.cat?' · '+esc(g.cat):'')+'</span><span class="row"><button class="btn quiet" data-act="edit" data-id="'+esc(g.id)+'">Изменить</button><button class="btn quiet" data-act="done" data-id="'+esc(g.id)+'">Готово</button></span></div></li>';
-    }).join('')+'</ul></section>';
   }
   if(done.length){
     h+='<details style="margin-top:16px"><summary>Выполнено: '+done.length+'</summary><ul class="list done">'+done.map(function(g){
@@ -451,8 +494,8 @@ function render(){
   tick();
 }
 function tick(){
-  var el=root.querySelector('[data-hero]'); if(!el)return;
-  var g=goals.filter(function(x){return x.id===el.dataset.hero})[0]; if(!g)return;
+  var el=root.querySelector('.goal.open'); if(!el)return;
+  var g=goals.filter(function(x){return x.id===el.dataset.goal})[0]; if(!g)return;
   var p=parts(due(g)-Date.now());
   el.querySelectorAll('.num').forEach(function(n){var v=p[n.dataset.u];n.textContent=n.dataset.u==='d'?v:String(v).padStart(2,'0')});
 }
@@ -483,7 +526,7 @@ function call(method,path,body){
 function send(method,path,body,okText){
   if(busy)return; busy=true;
   call(method,path,body).then(function(s){apply(s);if(okText){toast(okText);buzz()}})
-    .catch(function(){toast('Не удалось сохранить. Проверьте соединение и попробуйте ещё раз.')})
+    .catch(function(){toast('Не удалось сохранить. Проверьте соединение и попробуйте еще раз.')})
     .then(function(){busy=false});
 }
 function payload(g,over){var o={title:g.title,deadline:g.deadline,step:g.step||'',cat:g.cat||'',done:!!g.done};for(var k in over)o[k]=over[k];return o}
@@ -519,6 +562,7 @@ root.addEventListener('click',function(e){
   var g=goals.filter(function(x){return x.id===b.dataset.id})[0];
   if(b.dataset.act==='new')openForm();
   else if(!g)return;
+  else if(b.dataset.act==='toggle'){openId=openId===g.id?'':g.id;picked=true;render()}
   else if(b.dataset.act==='edit')openForm(g);
   else if(b.dataset.act==='done')send('PUT','/api/goals/'+g.id,payload(g,{done:true}),'Готово. Цель закрыта.');
   else if(b.dataset.act==='undo')send('PUT','/api/goals/'+g.id,payload(g,{done:false}));
@@ -541,7 +585,7 @@ function start(){
     if(s.settings&&s.settings.tz!==tz)call('PUT','/api/settings',{tz:tz}).then(apply).catch(function(){});
   }).catch(function(err){
     ready=true; goals=[];
-    root.innerHTML='<div class="empty"><p>'+(err&&err.error==='no_token'?'Бот ещё не подключён к сервису. Нужно добавить его токен в настройках.':'Не удалось загрузить цели. Закройте планер и откройте его снова из чата с ботом.')+'</p></div>';
+    root.innerHTML='<div class="empty"><p>'+(err&&err.error==='no_token'?'Бот еще не подключен к сервису. Нужно добавить его токен в настройках.':'Не удалось загрузить цели. Закройте планер и откройте его снова из чата с ботом.')+'</p></div>';
   });
 }
 start();
