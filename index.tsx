@@ -402,7 +402,7 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
 <body>
 <div class="wrap">
   <header>
-    <div class="brand"><img src="/avatar.jpg?v=6" alt="" width="40" height="40"><div><h1>Цели и сроки</h1><p class="meta" id="count"></p></div></div>
+    <div class="brand"><div><h1>Цели и сроки</h1><p class="meta" id="count"></p></div></div>
     <button class="btn primary" id="add" hidden>Новая цель</button>
   </header>
   <main id="root"><div class="empty"><p>Загружаю цели…</p></div></main>
