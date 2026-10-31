@@ -63,13 +63,7 @@ function sync() {
   try {
     const cfg = JSON.parse(raw);
     const key = "sync_" + cfg.id;
-    if (db.query("SELECT v FROM meta WHERE k=?").get(key)) {
-      const o: any = db.query("SELECT v FROM meta WHERE k='seeded'").get();
-      const want = new Set(cfg.items.map((i: any) => i.title));
-      if (o) for (const g of db.query("SELECT id,title,deadline,done FROM goals WHERE user_id=?").all(Number(o.v)) as any[])
-        if (!want.has(g.title)) console.log("SYNC: вне списка", g.id, g.deadline, g.done, g.title);
-      return;
-    }
+    if (db.query("SELECT v FROM meta WHERE k=?").get(key)) return;
     const owner: any = db.query("SELECT v FROM meta WHERE k='seeded'").get();
     if (!owner) { console.log("SYNC: владелец еще не открывал бота"); return; }
     const uid = Number(owner.v), now = new Date().toISOString();
