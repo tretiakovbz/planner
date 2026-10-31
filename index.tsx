@@ -205,7 +205,7 @@ async function tick() {
 
 // Аватар бота ставится один раз; отметка об этом хранится в базе.
 async function avatar() {
-  const KEY = "avatar_v5";
+  const KEY = "avatar_v6";
   try {
     if (db.query("SELECT v FROM meta WHERE k=?").get(KEY)) return;
     const f = Bun.file(import.meta.dir + "/avatar.jpg");
@@ -276,7 +276,7 @@ const boot = () => Bun.serve({
     const path = new URL(req.url).pathname;
     try {
       if (path === "/" && req.method === "GET") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
-      if (path === "/avatar.jpg") return new Response(Bun.file(import.meta.dir + "/avatar.jpg"), { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=3600" } });
+      if (path === "/avatar.jpg") return new Response(Bun.file(import.meta.dir + "/avatar.jpg"), { headers: { "content-type": "image/jpeg", "cache-control": "no-cache" } });
       if (path === "/health") return json({ ok: true, bot: !!TOKEN, domain: !!DOMAIN, persistent });
       if (path === "/tick") return json({ sent: await tick() });
       if (HOOK && path === "/tg/" + HOOK && req.method === "POST") {
@@ -325,7 +325,7 @@ html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--body)}
 .wrap{max-width:560px;margin:0 auto;padding-inline:16px;padding-block:calc(16px + env(safe-area-inset-top,0px)) calc(40px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:20px}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-h1{font:700 1.3rem/1.15 var(--display);margin:0;letter-spacing:-.025em}
+h1{font:600 1.3rem/1.15 var(--display);margin:0;letter-spacing:-.02em}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;border-radius:10px}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn{padding:12px 22px;font-weight:500;border:1px solid var(--line);background:var(--surface);min-height:48px;border-radius:999px}
@@ -379,7 +379,7 @@ details summary{cursor:pointer;font-size:.875rem;color:var(--muted);padding:8px 
 .panel{display:flex;flex-direction:column;gap:14px;padding:2px 20px 20px}
 .goal.open{background:var(--hero);color:var(--hero-ink);border-color:transparent}
 .goal.open .head .eyebrow,.goal.open .pill,.goal.open .num{color:var(--hero-gold)}
-.goal.open .t{font-size:1.2rem;font-weight:600;line-height:1.25}
+.goal.open .t{font-size:1.2rem;font-weight:500;line-height:1.25}
 .goal.open .cell{background:var(--hero-cell)}
 .goal.open .lbl,.goal.open .meta{color:var(--hero-muted)}
 .goal.open .bar{background:var(--hero-line)}
@@ -402,7 +402,7 @@ input,select{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);b
 <body>
 <div class="wrap">
   <header>
-    <div class="brand"><img src="/avatar.jpg" alt="" width="40" height="40"><div><h1>Цели и сроки</h1><p class="meta" id="count"></p></div></div>
+    <div class="brand"><img src="/avatar.jpg?v=6" alt="" width="40" height="40"><div><h1>Цели и сроки</h1><p class="meta" id="count"></p></div></div>
     <button class="btn primary" id="add" hidden>Новая цель</button>
   </header>
   <main id="root"><div class="empty"><p>Загружаю цели…</p></div></main>
