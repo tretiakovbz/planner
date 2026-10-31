@@ -55,6 +55,38 @@ function seed(userId: number) {
   } catch (e) { console.error("SEED: не удалось разобрать SEED_JSON", String(e)); }
 }
 
+// Разовое обновление целей владельца из SYNC_JSON: {id, items:[{title,deadline,cat,done,was?}], remove:[title]}.
+// Совпадение ищется по старому названию (was) или текущему; отметки "выполнено" из планера не теряются.
+function sync() {
+  const raw = Bun.env.SYNC_JSON;
+  if (!raw) return;
+  try {
+    const cfg = JSON.parse(raw);
+    const key = "sync_" + cfg.id;
+    if (db.query("SELECT v FROM meta WHERE k=?").get(key)) return;
+    const owner: any = db.query("SELECT v FROM meta WHERE k='seeded'").get();
+    if (!owner) { console.log("SYNC: владелец еще не открывал бота"); return; }
+    const uid = Number(owner.v), now = new Date().toISOString();
+    let upd = 0, add = 0, del = 0;
+    for (const it of cfg.items) {
+      const c = clean(it); if (!c) continue;
+      const g: any = db.query("SELECT * FROM goals WHERE user_id=? AND (title=? OR title=?)").get(uid, it.was || c.title, c.title);
+      if (g) {
+        const done = it.done || g.done ? 1 : 0;
+        db.run("UPDATE goals SET title=?,deadline=?,cat=?,done=?,done_at=? WHERE id=?", [c.title, c.deadline, c.cat || g.cat, done, done ? (g.done_at || now) : "", g.id]);
+        upd++;
+      } else {
+        db.run("INSERT INTO goals(user_id,title,deadline,step,cat,created,done,done_at) VALUES(?,?,?,?,?,?,?,?)", [uid, c.title, c.deadline, "", c.cat, now, it.done ? 1 : 0, it.done ? now : ""]);
+        add++;
+      }
+    }
+    for (const t of cfg.remove || []) del += db.run("DELETE FROM goals WHERE user_id=? AND title=?", [uid, t]).changes;
+    db.run("INSERT INTO meta(k,v) VALUES(?,?)", [key, now]);
+    const tot: any = db.query("SELECT COUNT(*) n, SUM(done) d FROM goals WHERE user_id=?").get(uid);
+    console.log("SYNC:", cfg.id, "обновлено", upd, "добавлено", add, "удалено", del, "| всего", tot.n, "выполнено", tot.d);
+  } catch (e) { console.error("SYNC: ошибка", String(e)); }
+}
+
 // Проверка подписи Telegram: только настоящий пользователь бота получает доступ к своим целям.
 function auth(req: Request): User | null {
   if (!TOKEN) return null;
@@ -703,6 +735,7 @@ start();
 </script>
 </body></html>`;
 
+sync();
 boot();
 console.log("START: порт", Bun.env.PORT || 3000);
 await setup();
